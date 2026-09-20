@@ -4,6 +4,7 @@ import type {
   CallAnswer,
   CallDecision,
   CompactOptions,
+  CompactProgress,
   CompactResult,
   CompactionState,
   JevAsker,
@@ -261,9 +262,18 @@ export async function compact(
 ): Promise<CompactResult> {
   const started = Date.now();
   const resolved = resolveOptions(options);
+  // A progress listener watches; it never gets to fail the compaction.
+  const report = (event: CompactProgress): void => {
+    try {
+      options.onProgress?.(event);
+    } catch {
+      /* ignored on purpose */
+    }
+  };
   const calls = collectToolCalls(messages, resolved.preserveRecentMessages);
   const candidates = calls.filter((call) => !call.pinned);
   const charsBefore = messages.reduce((sum, message) => sum + messageChars(message), 0);
+  report({ phase: 'calls', calls, candidates: candidates.length });
 
   let fitted: { tokens: number; stage: string } = { tokens: 0, stage: '' };
   let batches: ToolCall[][] = [];
@@ -271,9 +281,25 @@ export async function compact(
   if (candidates.length > 0) {
     const state = fitState(messages, calls, resolved);
     fitted = state;
+    report({ phase: 'state', tokens: state.tokens, stage: state.stage });
     batches = batchCalls(candidates, state.tokens, resolved);
+    const total = batches.length;
+    report({ phase: 'batches', batches: total, sizes: batches.map((batch) => batch.length) });
     const answered = await Promise.all(
-      batches.map((batch) => askBatch(asker, state.state, batch)),
+      batches.map(async (batch, at) => {
+        const index = at + 1;
+        report({ phase: 'batch-start', index, total, ids: batch.map((call) => call.id) });
+        const sent = Date.now();
+        const map = await askBatch(asker, state.state, batch);
+        report({
+          phase: 'batch-done',
+          index,
+          total,
+          ms: Date.now() - sent,
+          answers: [...map].map(([id, answer]) => ({ id, ...answer })),
+        });
+        return map;
+      }),
     );
     for (const map of answered) for (const [id, answer] of map) answers.set(id, answer);
   }
@@ -281,13 +307,14 @@ export async function compact(
   const decisions = calls.map((call) =>
     decideCall(call, answers.get(call.id) ?? { keepCall: 1, keepResult: 1 }, resolved),
   );
+  report({ phase: 'decisions', decisions });
   const kept = applyDecisions(
     messages,
     decisions,
     calls,
     resolved.truncateHeadChars,
   );
-  return {
+  const result: CompactResult = {
     messages: kept,
     decisions,
     stats: {
@@ -306,4 +333,6 @@ export async function compact(
       ms: Date.now() - started,
     },
   };
+  report({ phase: 'applied', stats: result.stats });
+  return result;
 }

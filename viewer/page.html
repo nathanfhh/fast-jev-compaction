@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jev Compaction</title>
+<style>
+  :root {
+    --bg: #0d0f13; --panel: #14171d; --panel-2: #1a1e26; --line: #262b35;
+    --text: #d7dce5; --dim: #7c8695; --faint: #4d5666;
+    --keep: #4ec98a; --trunc: #e0a750; --drop: #e26d6d; --pin: #6f7a8c;
+    --accent: #7aa2f7; --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 13px/1.55 var(--mono); -webkit-font-smoothing: antialiased;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 12px 16px; border-bottom: 1px solid var(--line);
+    background: var(--panel); position: sticky; top: 0; z-index: 10;
+  }
+  h1 { font-size: 13px; font-weight: 600; margin: 0; letter-spacing: .02em; }
+  h1 span { color: var(--accent); }
+  .status { display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 12px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+  .dot.live { background: var(--keep); box-shadow: 0 0 0 0 rgba(78,201,138,.6); animation: pulse 2s infinite; }
+  .dot.lost { background: var(--drop); }
+  @keyframes pulse { 70% { box-shadow: 0 0 0 6px rgba(78,201,138,0); } 100% { box-shadow: 0 0 0 0 rgba(78,201,138,0); } }
+  .spacer { flex: 1; }
+  button {
+    font: inherit; color: var(--text); background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 5px; padding: 5px 11px; cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .4; cursor: default; }
+  main { padding: 16px; max-width: 1200px; margin: 0 auto; }
+  .empty { color: var(--faint); padding: 48px 0; text-align: center; }
+  .run {
+    border: 1px solid var(--line); border-radius: 8px; margin-bottom: 16px;
+    background: var(--panel); overflow: hidden;
+  }
+  .run-head {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 10px 14px; border-bottom: 1px solid var(--line); cursor: pointer;
+    background: var(--panel-2);
+  }
+  .run-title { font-weight: 600; }
+  .run-time { color: var(--faint); font-size: 11px; }
+  .chip {
+    font-size: 11px; padding: 1px 7px; border-radius: 10px;
+    border: 1px solid var(--line); color: var(--dim);
+  }
+  .chip.replaced { color: var(--keep); border-color: rgba(78,201,138,.45); }
+  .chip.fallback { color: var(--trunc); border-color: rgba(224,167,80,.45); }
+  .chip.error { color: var(--drop); border-color: rgba(226,109,109,.45); }
+  .chip.running { color: var(--accent); border-color: rgba(122,162,247,.45); }
+  .stats { display: flex; flex-wrap: wrap; gap: 20px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  .stat-k { color: var(--faint); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+  .stat-v { font-size: 15px; }
+  .stages { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  .stage {
+    font-size: 11px; color: var(--dim); border: 1px solid var(--line);
+    border-radius: 4px; padding: 2px 8px; animation: in .25s ease both;
+  }
+  .stage b { color: var(--text); font-weight: 500; }
+  @keyframes in { from { opacity: 0; transform: translateY(-3px); } }
+  table { width: 100%; border-collapse: collapse; }
+  th {
+    text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--faint); font-weight: 500; padding: 8px 10px; border-bottom: 1px solid var(--line);
+  }
+  td { padding: 7px 10px; border-bottom: 1px solid #1c2129; vertical-align: top; }
+  tr.row { animation: in .3s ease both; }
+  tr.row.settled td:first-child { border-left: 2px solid transparent; }
+  tr.keep td:first-child { border-left-color: var(--keep); }
+  tr.drop_result td:first-child { border-left-color: var(--trunc); }
+  tr.drop_call td:first-child { border-left-color: var(--drop); }
+  tr.pinned td:first-child { border-left-color: var(--pin); }
+  tr.drop_call .tool, tr.drop_call .input { opacity: .45; text-decoration: line-through; }
+  .id { color: var(--faint); }
+  .tool { color: var(--accent); }
+  .input { color: var(--dim); word-break: break-all; }
+  .input.full { color: var(--text); white-space: pre-wrap; }
+  .more { color: var(--faint); cursor: pointer; text-decoration: underline dotted; }
+  .num { text-align: right; color: var(--dim); white-space: nowrap; }
+  .bar { position: relative; width: 74px; height: 5px; border-radius: 3px; background: #232833; overflow: hidden; }
+  .bar i { position: absolute; inset: 0 auto 0 0; display: block; border-radius: 3px; transition: width .5s cubic-bezier(.2,.8,.3,1); }
+  .bar.hi i { background: var(--keep); } .bar.lo i { background: var(--drop); }
+  .score { display: flex; align-items: center; gap: 7px; }
+  .score b { font-weight: 400; color: var(--dim); font-size: 11px; width: 30px; }
+  .verdict { font-size: 11px; padding: 1px 7px; border-radius: 4px; white-space: nowrap; animation: pop .35s cubic-bezier(.2,1.5,.4,1) both; }
+  @keyframes pop { from { transform: scale(.7); opacity: 0; } }
+  .verdict.keep { color: var(--keep); background: rgba(78,201,138,.1); }
+  .verdict.drop_result { color: var(--trunc); background: rgba(224,167,80,.1); }
+  .verdict.drop_call { color: var(--drop); background: rgba(226,109,109,.1); }
+  .verdict.pinned { color: var(--pin); background: rgba(111,122,140,.1); }
+  .verdict.waiting { color: var(--faint); background: transparent; animation: none; }
+  .collapsed .stats, .collapsed .stages, .collapsed table, .collapsed .err { display: none; }
+  .err { padding: 10px 14px; color: var(--drop); }
+  footer { padding: 8px 16px 40px; color: var(--faint); font-size: 11px; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>fast-jev <span>compaction</span></h1>
+  <div class="status"><span class="dot" id="dot"></span><span id="conn">connecting…</span></div>
+  <div class="spacer"></div>
+  <button id="download">Download HTML</button>
+  <button id="clear">Clear</button>
+</header>
+<main><div class="empty" id="empty">Waiting for the next compaction…</div><div id="runs"></div></main>
+<footer id="foot">In memory only — nothing is stored. Close the tab and it is gone.</footer>
+<script>
+(() => {
+  'use strict';
+  const snapshotEl = document.getElementById('fj-snapshot');
+  const SNAPSHOT = snapshotEl ? JSON.parse(snapshotEl.textContent) : null;
+  const token = new URLSearchParams(location.search).get('t') || '';
+  const runs = new Map();
+  const order = [];
+  const collapsed = new Set();
+  const expanded = new Set();
+  const el = { runs: document.getElementById('runs'), empty: document.getElementById('empty') };
+
+  const ACTION_LABEL = { keep: 'keep', drop_result: 'truncate result', drop_call: 'drop call', pinned: 'pinned' };
+  const pct = (n) => `${Math.round(n * 100)}%`;
+  const num = (n) => (typeof n === 'number' ? n.toLocaleString('en-US') : '—');
+
+  function node(tag, cls, text) {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined) n.textContent = text;
+    return n;
+  }
+
+  function run(id) {
+    let r = runs.get(id);
+    if (!r) {
+      r = { id, at: Date.now(), calls: new Map(), stages: [], stats: null, outcome: null, error: null };
+      runs.set(id, r);
+      order.unshift(id);
+    }
+    return r;
+  }
+
+  function apply(event) {
+    const d = event && event.data ? event.data : event;
+    if (!d || typeof d !== 'object') return;
+    const r = d.runId ? run(d.runId) : null;
+    switch (d.type) {
+      case 'reset': runs.clear(); order.length = 0; break;
+      case 'run.start':
+        r.at = d.at || Date.now();
+        r.trigger = d.trigger;
+        r.messagesBefore = d.messagesBefore;
+        break;
+      case 'run.calls': {
+        const all = d.calls || [];
+        for (const c of all) r.calls.set(c.id, { ...c, action: c.pinned ? 'pinned' : null });
+        r.stages.push({ k: 'collected', v: `${d.candidates} of ${all.length} calls scoreable` });
+        break;
+      }
+      case 'run.state':
+        r.stateTokens = d.tokens; r.stateStage = d.stage;
+        r.stages.push({ k: 'state fitted', v: `${num(d.tokens)} tok · ${d.stage}` });
+        break;
+      case 'run.batches':
+        r.batches = d.batches;
+        r.stages.push({ k: 'batched', v: `${d.batches} request${d.batches === 1 ? '' : 's'}` });
+        break;
+      case 'run.batch.start':
+        r.stages.push({ k: `request ${d.index}/${d.total}`, v: `${(d.ids || []).length} calls sent` });
+        break;
+      case 'run.batch.done':
+        r.stages.push({ k: `request ${d.index}/${d.total}`, v: `answered in ${num(d.ms)} ms` });
+        for (const a of d.answers || []) {
+          const c = r.calls.get(a.id) || {};
+          r.calls.set(a.id, { ...c, id: a.id, keepCall: a.keepCall, keepResult: a.keepResult });
+        }
+        break;
+      case 'run.decisions':
+        for (const dec of d.decisions || []) {
+          const c = r.calls.get(dec.id) || {};
+          r.calls.set(dec.id, { ...c, ...dec });
+        }
+        break;
+      case 'run.applied':
+        r.stats = d.stats;
+        break;
+      case 'run.done':
+        r.outcome = d.outcome;
+        r.reason = d.reason;
+        r.messagesAfter = d.messagesAfter;
+        r.stages.push({
+          k: 'done',
+          v: d.outcome === 'replaced' ? 'history replaced, no summary' : `fell back — ${d.reason || 'see log'}`,
+        });
+        break;
+      case 'run.error':
+        r.outcome = 'error'; r.error = d.message;
+        break;
+      default: break;
+    }
+  }
+
+  function scoreCell(value) {
+    const wrap = node('div', 'score');
+    const bar = node('div', 'bar ' + (value >= 0.5 ? 'hi' : 'lo'));
+    const fill = node('i');
+    fill.style.width = `${Math.max(0, Math.min(1, value)) * 100}%`;
+    bar.appendChild(fill);
+    wrap.appendChild(bar);
+    wrap.appendChild(node('b', null, value.toFixed(2)));
+    return wrap;
+  }
+
+  function inputCell(call, key) {
+    const td = node('td');
+    const text = call.input || '';
+    const isOpen = expanded.has(key);
+    const span = node('span', 'input' + (isOpen ? ' full' : ''));
+    span.textContent = isOpen || text.length <= 90 ? text : text.slice(0, 90) + '…';
+    td.appendChild(span);
+    if (text.length > 90) {
+      const more = node('span', 'more', isOpen ? ' less' : ' more');
+      more.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (isOpen) expanded.delete(key); else expanded.add(key);
+        render();
+      });
+      td.appendChild(more);
+    }
+    return td;
+  }
+
+  function renderRun(r) {
+    const box = node('div', 'run' + (collapsed.has(r.id) ? ' collapsed' : ''));
+
+    const head = node('div', 'run-head');
+    head.appendChild(node('span', 'run-title', r.trigger ? `compaction · ${r.trigger}` : 'compaction'));
+    head.appendChild(node('span', 'run-time', new Date(r.at).toLocaleTimeString()));
+    const state = r.outcome || 'running';
+    head.appendChild(node('span', 'chip ' + state, state === 'replaced'
+      ? `no summary · ${r.stats ? pct((r.stats.charsBefore - r.stats.charsAfter) / (r.stats.charsBefore || 1)) : ''} smaller`
+      : state));
+    head.addEventListener('click', () => {
+      if (collapsed.has(r.id)) collapsed.delete(r.id); else collapsed.add(r.id);
+      render();
+    });
+    box.appendChild(head);
+
+    const s = r.stats;
+    const stats = node('div', 'stats');
+    const pairs = [
+      ['messages', s ? `${s.messagesBefore} → ${s.messagesAfter}` : num(r.messagesBefore)],
+      ['characters', s ? `${num(s.charsBefore)} → ${num(s.charsAfter)}` : '—'],
+      ['reduction', s ? pct((s.charsBefore - s.charsAfter) / (s.charsBefore || 1)) : '—'],
+      ['state', r.stateTokens ? `~${num(r.stateTokens)} tok` : '—'],
+      ['requests', r.batches !== undefined ? num(r.batches) : '—'],
+      ['elapsed', s ? `${num(s.ms)} ms` : '—'],
+    ];
+    for (const [k, v] of pairs) {
+      const cell = node('div');
+      cell.appendChild(node('div', 'stat-k', k));
+      cell.appendChild(node('div', 'stat-v', v));
+      stats.appendChild(cell);
+    }
+    box.appendChild(stats);
+
+    if (r.stages.length) {
+      const stages = node('div', 'stages');
+      for (const st of r.stages) {
+        const chip = node('div', 'stage');
+        chip.appendChild(node('b', null, st.k));
+        chip.appendChild(document.createTextNode(' ' + st.v));
+        stages.appendChild(chip);
+      }
+      box.appendChild(stages);
+    }
+
+    if (r.error) box.appendChild(node('div', 'err', r.error));
+
+    const table = node('table');
+    const thead = node('thead');
+    const hrow = node('tr');
+    for (const h of ['', 'tool', 'input', 'result', 'keep call', 'keep result', 'verdict']) {
+      hrow.appendChild(node('th', null, h));
+    }
+    thead.appendChild(hrow);
+    table.appendChild(thead);
+    const tbody = node('tbody');
+    for (const call of r.calls.values()) {
+      const settled = call.action !== null && call.action !== undefined;
+      const tr = node('tr', 'row' + (settled ? ' settled ' + call.action : ''));
+      tr.appendChild(node('td', 'id', call.id));
+      tr.appendChild(node('td', 'tool', call.tool || '—'));
+      tr.appendChild(inputCell(call, r.id + ':' + call.id));
+      tr.appendChild(node('td', 'num', call.resultChars !== undefined
+        ? `${num(call.resultChars)} ch${call.isError ? ' ✕' : ''}` : '—'));
+      const cc = node('td');
+      if (typeof call.keepCall === 'number') cc.appendChild(scoreCell(call.keepCall));
+      else cc.appendChild(node('span', 'input', '—'));
+      tr.appendChild(cc);
+      const cr = node('td');
+      if (typeof call.keepResult === 'number') cr.appendChild(scoreCell(call.keepResult));
+      else cr.appendChild(node('span', 'input', '—'));
+      tr.appendChild(cr);
+      const v = node('td');
+      v.appendChild(node('span', 'verdict ' + (settled ? call.action : 'waiting'),
+        settled ? ACTION_LABEL[call.action] || call.action : 'waiting'));
+      tr.appendChild(v);
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    box.appendChild(table);
+    return box;
+  }
+
+  function render() {
+    el.empty.style.display = order.length ? 'none' : '';
+    el.runs.replaceChildren(...order.map((id) => renderRun(runs.get(id))));
+  }
+
+  function setConn(cls, text) {
+    document.getElementById('dot').className = 'dot ' + cls;
+    document.getElementById('conn').textContent = text;
+  }
+
+  // ---- snapshot mode: a downloaded copy renders its embedded data and stops.
+  if (SNAPSHOT) {
+    for (const e of SNAPSHOT.events || []) apply(e);
+    render();
+    setConn('', `snapshot · ${new Date(SNAPSHOT.at).toLocaleString()}`);
+    for (const id of ['download', 'clear']) document.getElementById(id).remove();
+    document.getElementById('foot').textContent =
+      'Standalone snapshot of a fast-jev-compaction run. Nothing here is live.';
+    return;
+  }
+
+  // ---- live mode
+  const seen = [];
+  const source = new EventSource(`/stream?t=${encodeURIComponent(token)}`);
+  source.onopen = () => setConn('live', 'live');
+  source.onerror = () => setConn('lost', 'reconnecting…');
+  source.onmessage = (message) => {
+    let event;
+    try { event = JSON.parse(message.data); } catch { return; }
+    seen.push(event);
+    apply(event);
+    render();
+  };
+
+  document.getElementById('clear').addEventListener('click', async () => {
+    await fetch(`/reset?t=${encodeURIComponent(token)}`, { method: 'POST' }).catch(() => {});
+    seen.length = 0;
+    runs.clear();
+    order.length = 0;
+    render();
+  });
+
+  document.getElementById('download').addEventListener('click', async () => {
+    const button = document.getElementById('download');
+    button.disabled = true;
+    try {
+      const template = await (await fetch(`/template?t=${encodeURIComponent(token)}`)).text();
+      const payload = JSON.stringify({ at: Date.now(), events: seen })
+        .replace(/</g, '\\u003c')
+        .replace(/[\u2028\u2029]/g, (c) => '\\u' + c.charCodeAt(0).toString(16));
+      const html = template.replace(
+        '</head>',
+        `<script id="fj-snapshot" type="application/json">${payload}<\/script>\n</head>`,
+      );
+      const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `jev-compaction-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '')}.html`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

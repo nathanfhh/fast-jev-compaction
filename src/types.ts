@@ -105,6 +105,12 @@ export interface CompactOptions {
   maxRequestTokens?: number;
   /** Characters of a dropped tool result to retain. Default 300. */
   truncateHeadChars?: number;
+  /**
+   * Called as compaction progresses, for a live view of the run. It is a
+   * bystander: whatever it throws is swallowed, so it can never fail a
+   * compaction.
+   */
+  onProgress?: ProgressReporter;
 }
 
 export interface ResolvedCompactOptions {
@@ -200,3 +206,30 @@ export interface JevResponse {
 export interface JevAsker {
   ask(state: JevState, questions: JevQuestions): Promise<JevResponse>;
 }
+
+/** One answered call, as a progress event carries it. */
+export interface ProgressAnswer extends CallAnswer {
+  id: string;
+}
+
+/**
+ * What `compact` reports as it runs. Jev answers a whole batch at a time, so
+ * `batch-done` is the finest granularity the model itself offers; the rest are
+ * the stages around it.
+ */
+export type CompactProgress =
+  | { phase: 'calls'; calls: readonly ToolCall[]; candidates: number }
+  | { phase: 'state'; tokens: number; stage: string }
+  | { phase: 'batches'; batches: number; sizes: readonly number[] }
+  | { phase: 'batch-start'; index: number; total: number; ids: readonly string[] }
+  | {
+      phase: 'batch-done';
+      index: number;
+      total: number;
+      ms: number;
+      answers: readonly ProgressAnswer[];
+    }
+  | { phase: 'decisions'; decisions: readonly CallDecision[] }
+  | { phase: 'applied'; stats: CompactResult['stats'] };
+
+export type ProgressReporter = (event: CompactProgress) => void;

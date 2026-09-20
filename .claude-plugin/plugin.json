@@ -1,7 +1,7 @@
 {
   "name": "fast-jev-compaction",
-  "version": "0.3.0",
-  "description": "Verbatim Jev-guided compaction for Claude Code sessions.",
+  "version": "0.4.0",
+  "description": "Verbatim Jev-guided compaction for Claude Code sessions, with a live decision viewer.",
   "license": "MIT",
   "userConfig": {
     "apiKey": {
@@ -57,6 +57,36 @@
       "title": "Jev model",
       "description": "TypeSafe Jev model name.",
       "default": "jev-latest"
+    },
+    "viewerEnabled": {
+      "type": "boolean",
+      "title": "Live viewer",
+      "description": "Serve a loopback page that shows each compaction’s Jev decisions as they land.",
+      "default": true
+    },
+    "viewerPort": {
+      "type": "number",
+      "title": "Viewer port",
+      "description": "Loopback port for the live viewer. Bound to 127.0.0.1 only.",
+      "default": 4317
+    },
+    "viewerAutoOpen": {
+      "type": "boolean",
+      "title": "Open the viewer automatically",
+      "description": "Open the viewer in a browser at the first compaction of a session.",
+      "default": true
+    },
+    "viewerIdleMinutes": {
+      "type": "number",
+      "title": "Viewer idle shutdown",
+      "description": "Minutes with no events and no open page before the viewer server exits.",
+      "default": 30
+    },
+    "viewerNodePath": {
+      "type": "string",
+      "title": "Node executable",
+      "description": "Executable used to run the viewer server; resolved on PATH when unset.",
+      "default": "node"
     }
   }
 }

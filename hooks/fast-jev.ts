@@ -18,6 +18,15 @@ import type {
   ToolResult,
   ToolUse,
 } from '../src/types.js';
+import {
+  createViewer,
+  resolveViewerConfig,
+  toViewerEvents,
+  type Viewer,
+  type ViewerConfig,
+  type ViewerEvent,
+  type ViewerHost,
+} from './viewer.js';
 
 const HOOK_DEFAULTS = {
   compactAtPercent: 60,
@@ -45,6 +54,7 @@ export type HookConfig = CompactOptions & {
   compactAtPercent: number;
   minReductionRatio: number;
   model: string;
+  viewer: ViewerConfig;
 };
 
 function optionNumber(options: PluginOptions, key: string, fallback: number): number {
@@ -79,6 +89,7 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
       HOOK_DEFAULTS.minReductionRatio,
     ),
     model: optionString(options, 'model') ?? HOOK_DEFAULTS.model,
+    viewer: resolveViewerConfig(options),
   };
   const apiKey = optionString(options, 'apiKey');
   if (apiKey) config.apiKey = apiKey;
@@ -256,35 +267,136 @@ function notify(
   $.ui.toast(text, { timeoutMs: 15_000 });
 }
 
+function reason(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** The viewer's whole mutable state, so the resolver can live at the top level. */
+interface ViewerState {
+  config: ViewerConfig;
+  viewer: Viewer | null;
+  off: boolean;
+  opened: boolean;
+}
+
+/**
+ * Resolves the running viewer, starting it at most once per session. It never
+ * throws: a viewer that will not come up turns itself off and says so.
+ */
+async function liveViewer(
+  $: {
+    http: { fetch: (url: string, init?: HookFetchInit) => Promise<HookFetchResponse> };
+    process: {
+      run: (
+        argv: readonly string[],
+        init?: { timeoutMs?: number },
+      ) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
+    };
+    store: { get: (key: string) => Promise<unknown>; set: (key: string, value: unknown) => Promise<void> };
+    clock: { sleep: (ms: number) => Promise<void> };
+    plugin: { root: string };
+    ui: { log: (text: string) => void };
+  },
+  state: ViewerState,
+): Promise<Viewer | null> {
+  if (state.off) return null;
+  try {
+    const host: ViewerHost = {
+      fetch: (url, init) => $.http.fetch(url, init),
+      run: (argv, init) => $.process.run(argv, init),
+      storeGet: (key) => $.store.get(key),
+      storeSet: (key, value) => $.store.set(key, value),
+      sleep: (ms) => $.clock.sleep(ms),
+      pluginRoot: $.plugin.root,
+    };
+    state.viewer ??= await createViewer(host, state.config);
+    await state.viewer.ensure();
+    return state.viewer;
+  } catch (error) {
+    state.off = true;
+    $.ui.log(`fast-jev viewer disabled (${reason(error)})`);
+    return null;
+  }
+}
+
 export const register: Register = (on: On, options: PluginOptions) => {
   const configured = resolveHookConfig(options);
   let compacting = false;
+  const viewerState: ViewerState = {
+    config: configured.viewer,
+    viewer: null,
+    off: !configured.viewer.enabled,
+    opened: false,
+  };
+
+  on('session.start', async ($, event, next) => {
+    if (event.isInteractive) {
+      const live = await liveViewer($, viewerState);
+      if (live) $.ui.log(`fast-jev viewer: ${live.url}`);
+    }
+    return next(event);
+  });
 
   on('session.compact', async ($, event, next) => {
+    const live = await liveViewer($, viewerState);
+    const runId = crypto.randomUUID();
+    // The viewer only ever watches: a failed push is swallowed here.
+    const send = (events: readonly ViewerEvent[]): void => {
+      if (live) void live.post(events).catch(() => undefined);
+    };
+    if (live) {
+      send([
+        {
+          type: 'run.start',
+          runId,
+          at: Date.now(),
+          trigger: event.trigger,
+          messagesBefore: event.messages.length,
+        },
+      ]);
+      if (configured.viewer.autoOpen && !viewerState.opened) {
+        viewerState.opened = true;
+        void live.openInBrowser().catch(() => undefined);
+      }
+    }
     try {
-      const config = { ...configured, apiKey: await getApiKey($, configured) };
+      const config: HookConfig = {
+        ...configured,
+        apiKey: await getApiKey($, configured),
+        onProgress: (progress) => send(toViewerEvents(runId, progress)),
+      };
       const { result, messages } = await compactSession(event.messages, config, async (url, init) => {
         const response = await $.http.fetch(url, init);
         return { status: response.status, ok: response.ok, text: response.text };
       });
       for (const line of decisionLogLines(result)) $.ui.log(line);
       if (reductionRatio(result) < config.minReductionRatio) {
+        send([
+          {
+            type: 'run.done',
+            runId,
+            outcome: 'fallback',
+            reason: `below the ${percent(config.minReductionRatio)} minimum`,
+            messagesAfter: messages.length,
+          },
+        ]);
         notify(
           $,
           `fallback to built-in summary (below ${percent(config.minReductionRatio)} minimum: ${summarize(result)})`,
         );
         return next(event);
       }
+      send([
+        { type: 'run.done', runId, outcome: 'replaced', messagesAfter: messages.length },
+      ]);
       notify(
         $,
         `kept ${messages.length}/${event.messages.length} messages, no summary (${summarize(result)})`,
       );
       return { messages };
     } catch (error) {
-      notify(
-        $,
-        `fallback to built-in summary (${error instanceof Error ? error.message : String(error)})`,
-      );
+      send([{ type: 'run.error', runId, message: reason(error) }]);
+      notify($, `fallback to built-in summary (${reason(error)})`);
       return next(event);
     }
   });
@@ -297,9 +409,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
       compacting = true;
       await $.session.compact();
     } catch (error) {
-      $.ui.log(
-        `auto-compact skipped (${error instanceof Error ? error.message : String(error)})`,
-      );
+      $.ui.log(`auto-compact skipped (${reason(error)})`);
     } finally {
       compacting = false;
     }

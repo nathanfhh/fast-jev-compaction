@@ -8,6 +8,15 @@ import {
   toSessionMessages,
 } from '../hooks/fast-jev.ts';
 import { applyDecisions, collectToolCalls, decideCall, type Message } from '../src/index.js';
+import { VIEWER_DEFAULTS } from '../hooks/viewer.ts';
+
+const viewerDefaults = {
+  enabled: VIEWER_DEFAULTS.viewerEnabled,
+  port: VIEWER_DEFAULTS.viewerPort,
+  autoOpen: VIEWER_DEFAULTS.viewerAutoOpen,
+  idleMinutes: VIEWER_DEFAULTS.viewerIdleMinutes,
+  nodePath: VIEWER_DEFAULTS.viewerNodePath,
+};
 
 type SessionMessage = Message & { handle?: string };
 
@@ -53,7 +62,12 @@ function jevFetch(answer: (name: string) => number, bodies: string[] = []) {
 
 describe('hook config', () => {
   it('reads userConfig values and falls back to defaults', () => {
-    expect(resolveHookConfig({})).toEqual({ compactAtPercent: 60, minReductionRatio: 0.25, model: 'jev-latest' });
+    expect(resolveHookConfig({})).toEqual({
+      compactAtPercent: 60,
+      minReductionRatio: 0.25,
+      model: 'jev-latest',
+      viewer: viewerDefaults,
+    });
     expect(
       resolveHookConfig({ apiKey: 'k', keepThreshold: 0.3, maxStateTokens: 1000, model: 'jev-x', goal: 'g', compactAtPercent: 'no' }),
     ).toEqual({
@@ -64,7 +78,14 @@ describe('hook config', () => {
       goal: 'g',
       compactAtPercent: 60,
       minReductionRatio: 0.25,
+      viewer: viewerDefaults,
     });
+  });
+
+  it('reads the viewer options and ignores an impossible port', () => {
+    expect(
+      resolveHookConfig({ viewerEnabled: false, viewerPort: 70000, viewerAutoOpen: false, viewerNodePath: '/usr/bin/node' }).viewer,
+    ).toEqual({ enabled: false, port: 4317, autoOpen: false, idleMinutes: 30, nodePath: '/usr/bin/node' });
   });
 });
 

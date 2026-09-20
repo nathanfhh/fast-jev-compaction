@@ -86,3 +86,49 @@ References:
 - [Claude Code plugins](https://code.claude.com/docs/en/plugins)
 - [Claude Code plugins reference](https://code.claude.com/docs/en/plugins-reference)
 - [Claude Code hooks](https://code.claude.com/docs/en/hooks)
+
+## Live viewer
+
+Every compaction is broadcast, as it happens, to a page on loopback: each tool
+call with the two probabilities Jev gave it and the verdict that follows, plus
+the state size, the fitting stage and each request as it is sent and answered.
+Nothing is summarised and nothing is stored.
+
+A hooks module has no Node and no sockets, so the hook cannot serve this
+itself. It starts `viewer/server.mjs` as a sibling process through
+`$.process.run` and pushes events to it with `$.http.fetch`; the page reads
+them over Server-Sent Events. The server holds every event in memory and
+writes nothing to disk, so closing it loses the run — **Download HTML** saves
+the current run as one self-contained file with the data inlined, which opens
+with no server and makes no network request.
+
+The viewer is a bystander by construction: it is started outside the
+compaction path, every push is fire-and-forget, and `onProgress` throwing is
+swallowed by the library. A viewer that will not start disables itself for the
+session with one `$.ui.log` line and compaction proceeds untouched.
+
+| Option | Default | |
+| --- | ---: | --- |
+| `viewerEnabled` | `true` | Serve the page at all |
+| `viewerPort` | `4317` | Bound to `127.0.0.1` only, never `0.0.0.0` |
+| `viewerAutoOpen` | `true` | Open a browser at the session's first compaction |
+| `viewerIdleMinutes` | `30` | No events and no open page for this long: the server exits |
+| `viewerNodePath` | `node` | Executable used to start the server |
+
+The URL carries a random 32-character token, kept in the plugin store so a
+server left running by an earlier session is reused rather than fought over.
+The server refuses a request whose token is wrong (401), whose `Origin` is not
+this page (403) and whose `Host` is not loopback (421, against DNS
+rebinding) — the last two are what stop any other page in your browser from
+reading the run. It answers with a restrictive `Content-Security-Policy` and
+the page only ever writes data through `textContent`, so a tool input can
+never become markup.
+
+**What is on that port is your transcript**: tool names and a bounded head of
+every tool input, which is where file paths, Bash commands and edit diffs
+live. Tool *results* are not sent — only their size. Treat the port as you
+would the transcript itself.
+
+`npm run demo:viewer` replays a realistic transcript through the real
+compaction path with scripted Jev answers, so the page can be worked on
+without spending calls.

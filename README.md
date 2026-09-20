@@ -16,7 +16,11 @@ in order.
 
 The repository is both an npm package (`src/`) and a Claude Code plugin
 (`hooks/`, `.claude-plugin/`) that uses the package to replace Claude Code's
-built-in compaction summary with the original messages.
+built-in compaction summary with the original messages. The plugin also
+broadcasts each compaction to a loopback page as it happens — every call with
+Jev's two probabilities and the verdict that follows — which downloads as one
+self-contained HTML file and stores nothing (`hooks/README.md`, "Live
+viewer").
 
 ## How it works
 
