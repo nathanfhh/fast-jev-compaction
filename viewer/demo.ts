@@ -15,7 +15,7 @@ import { compact, type JevQuestions, type Message } from '../src/index.js';
 import { toViewerEvents, type ViewerEvent } from '../hooks/viewer.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const port = Number(process.env['FJV_PORT'] ?? 4317);
+const port = Number(process.env['FJV_PORT'] ?? 41000);
 const token = process.env['FJV_TOKEN'] ?? randomBytes(16).toString('hex');
 const base = `http://127.0.0.1:${port}`;
 

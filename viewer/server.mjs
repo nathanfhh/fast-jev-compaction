@@ -117,6 +117,15 @@ const server = createServer(async (req, res) => {
   if (!originOk(req)) return send(res, 403, 'text/plain; charset=utf-8', 'bad origin');
 
   const url = new URL(req.url ?? '/', `http://${HOST}:${port}`);
+
+  // Identity only, no token required: it says a viewer is here and nothing
+  // else. A scanner asks this first so it never sends the token to whatever
+  // happens to be listening on a port. Browsers are still shut out by the
+  // Origin check above.
+  if (req.method === 'GET' && url.pathname === '/whoami') {
+    return sendJson(res, 200, { name: 'fast-jev-viewer', port });
+  }
+
   const given = url.searchParams.get('t') ?? req.headers['x-fast-jev-token'];
   if (!tokenOk(typeof given === 'string' ? given : '')) {
     return send(res, 401, 'text/plain; charset=utf-8', 'bad token');
@@ -201,8 +210,10 @@ const server = createServer(async (req, res) => {
 });
 
 server.on('error', (error) => {
+  // EADDRINUSE is expected while a caller walks a port range looking for a
+  // free slot; it exits quietly and the caller moves on.
   console.error(`fast-jev viewer: ${error.message}`);
-  process.exit(1);
+  process.exit(error.code === 'EADDRINUSE' ? 3 : 1);
 });
 
 server.listen(port, HOST, () => {

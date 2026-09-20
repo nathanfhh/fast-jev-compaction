@@ -332,7 +332,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
   on('session.start', async ($, event, next) => {
     if (event.isInteractive) {
       const live = await liveViewer($, viewerState);
-      if (live) $.ui.log(`fast-jev viewer: ${live.url}`);
+      if (live) $.ui.log(`fast-jev viewer: ${live.url()}`);
     }
     return next(event);
   });

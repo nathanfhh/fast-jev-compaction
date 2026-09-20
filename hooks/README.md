@@ -122,7 +122,9 @@ session with one `$.ui.log` line and compaction proceeds untouched.
 | Option | Default | |
 | --- | ---: | --- |
 | `viewerEnabled` | `true` | Serve the page at all |
-| `viewerPort` | `4317` | Bound to `127.0.0.1` only, never `0.0.0.0` |
+| `viewerPort` | `0` | `0` finds a free port; a number pins that one. Bound to `127.0.0.1` only, never `0.0.0.0` |
+| `viewerPortBase` | `41000` | First port tried when `viewerPort` is `0` |
+| `viewerPortSpan` | `10` | How many ports from there are tried |
 | `viewerAutoOpen` | `true` | Open a browser at the session's first compaction |
 | `viewerIdleMinutes` | `30` | No events and no open page for this long: the server exits |
 | `viewerNodePath` | `node` | Executable used to start the server |
@@ -160,9 +162,33 @@ What ends a run is the *server* going away, or **Clear**. To check for one or
 end it by hand:
 
 ```sh
-lsof -nP -iTCP:4317 -sTCP:LISTEN     # is anything there
-pkill -f viewer/server.mjs           # end every viewer
+lsof -nP -iTCP:41000-41009 -sTCP:LISTEN   # is anything there
+pkill -f viewer/server.mjs                # end every viewer
 ```
+
+### Choosing a port
+
+`viewerPort` defaults to `0`, which walks `viewerPortBase` upwards for
+`viewerPortSpan` ports and takes the first one that works. The range starts at
+41000 because the obvious-looking low ports are spoken for — 4317 and 4318 are
+OpenTelemetry's OTLP defaults, and Claude Code itself can be pointed at a
+collector.
+
+Each candidate is asked `GET /whoami`, which takes no token and answers only
+that a viewer is there. The token is sent **after** that answer identifies the
+port as ours, so a scan never hands it to whatever else happens to be
+listening. A port that answers as ours and accepts the token is reused rather
+than fought with; a port holding anything else is skipped; the first free one
+gets the new server.
+
+`$.http.fetch` takes no abort signal, so a port that accepts a connection and
+then says nothing — a bare TCP listener — would block the probe forever, and
+with it the compaction that awaited the viewer. Every probe therefore stops
+waiting after 800 ms and counts that port as occupied, and the whole walk is
+given 6 seconds before it gives up and disables the viewer for the session.
+
+The port that worked is kept in the plugin store and tried first next time, so
+the URL stays put across sessions.
 
 `npm run demo:viewer` replays a realistic transcript through the real
 compaction path with scripted Jev answers, so the page can be worked on

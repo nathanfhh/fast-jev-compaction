@@ -1,6 +1,6 @@
 {
   "name": "fast-jev-compaction",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Verbatim Jev-guided compaction for Claude Code sessions, with a live decision viewer.",
   "license": "MIT",
   "userConfig": {
@@ -67,8 +67,8 @@
     "viewerPort": {
       "type": "number",
       "title": "Viewer port",
-      "description": "Loopback port for the live viewer. Bound to 127.0.0.1 only.",
-      "default": 4317
+      "description": "Exact loopback port for the live viewer. 0 walks the range below for a free one. Bound to 127.0.0.1 only.",
+      "default": 0
     },
     "viewerAutoOpen": {
       "type": "boolean",
@@ -87,6 +87,18 @@
       "title": "Node executable",
       "description": "Executable used to run the viewer server; resolved on PATH when unset.",
       "default": "node"
+    },
+    "viewerPortBase": {
+      "type": "number",
+      "title": "Viewer port range start",
+      "description": "First port tried when viewerPort is 0.",
+      "default": 41000
+    },
+    "viewerPortSpan": {
+      "type": "number",
+      "title": "Viewer port range size",
+      "description": "How many ports from the range start are tried before giving up.",
+      "default": 10
     }
   }
 }

@@ -13,6 +13,8 @@ import { VIEWER_DEFAULTS } from '../hooks/viewer.ts';
 const viewerDefaults = {
   enabled: VIEWER_DEFAULTS.viewerEnabled,
   port: VIEWER_DEFAULTS.viewerPort,
+  portBase: VIEWER_DEFAULTS.viewerPortBase,
+  portSpan: VIEWER_DEFAULTS.viewerPortSpan,
   autoOpen: VIEWER_DEFAULTS.viewerAutoOpen,
   idleMinutes: VIEWER_DEFAULTS.viewerIdleMinutes,
   nodePath: VIEWER_DEFAULTS.viewerNodePath,
@@ -82,10 +84,10 @@ describe('hook config', () => {
     });
   });
 
-  it('reads the viewer options and ignores an impossible port', () => {
+  it('reads the viewer options and falls back on an impossible port', () => {
     expect(
       resolveHookConfig({ viewerEnabled: false, viewerPort: 70000, viewerAutoOpen: false, viewerNodePath: '/usr/bin/node' }).viewer,
-    ).toEqual({ enabled: false, port: 4317, autoOpen: false, idleMinutes: 30, nodePath: '/usr/bin/node' });
+    ).toEqual({ ...viewerDefaults, enabled: false, autoOpen: false, nodePath: '/usr/bin/node' });
   });
 });
 

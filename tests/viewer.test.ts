@@ -3,6 +3,7 @@ import {
   WIRE_INPUT_CHARS,
   createViewer,
   newToken,
+  portCandidates,
   resolveViewerConfig,
   shellQuote,
   toViewerEvents,
@@ -14,22 +15,49 @@ import { compact, type CompactProgress, type Message } from '../src/index.js';
 
 const config: ViewerConfig = {
   enabled: true,
-  port: 4317,
+  port: 0,
+  portBase: 41000,
+  portSpan: 4,
   autoOpen: true,
   idleMinutes: 30,
   nodePath: 'node',
 };
 
-/** A `$` stand-in that records what the hook asked the host to do. */
-function host(options: { healthyAfter?: number } = {}) {
-  const healthyAfter = options.healthyAfter ?? 0;
-  const calls = { health: 0, posts: [] as Array<{ url: string; body: string; token?: string }>, run: [] as string[][] };
+/** `port: 0` scans; a pinned port is the other mode. */
+const pinned: ViewerConfig = { ...config, port: 41000 };
+
+type Occupant = 'ours' | 'foreign';
+
+/**
+ * A `$` stand-in over a fake machine: `occupied` says what already listens on
+ * which port, and `startable` which ports a launched server manages to bind.
+ */
+function host(options: { occupied?: Record<number, Occupant>; startable?: number[] } = {}) {
+  const occupied: Record<number, Occupant> = { ...(options.occupied ?? {}) };
+  const startable = options.startable;
+  const calls = {
+    probes: [] as number[],
+    tokenedProbes: [] as number[],
+    posts: [] as Array<{ url: string; body: string; token?: string }>,
+    run: [] as string[][],
+  };
   const store = new Map<string, unknown>();
+  const portOf = (url: string): number => Number(/127\.0\.0\.1:(\d+)/.exec(url)?.[1] ?? 0);
+
   const fake: ViewerHost = {
     async fetch(url, init) {
+      const port = portOf(url);
+      if (url.includes('/whoami')) {
+        calls.probes.push(port);
+        const who = occupied[port];
+        if (!who) throw new Error('ECONNREFUSED');
+        return who === 'ours'
+          ? { status: 200, ok: true, text: '{"name":"fast-jev-viewer","port":' + port + '}' }
+          : { status: 404, ok: false, text: 'nope' };
+      }
       if (url.includes('/health')) {
-        calls.health += 1;
-        if (calls.health <= healthyAfter) throw new Error('ECONNREFUSED');
+        calls.tokenedProbes.push(port);
+        if (occupied[port] !== 'ours') throw new Error('ECONNREFUSED');
         return { status: 200, ok: true, text: '{"ok":true,"name":"fast-jev-viewer"}' };
       }
       calls.posts.push({ url, body: init?.body ?? '', token: init?.headers?.['x-fast-jev-token'] });
@@ -37,6 +65,11 @@ function host(options: { healthyAfter?: number } = {}) {
     },
     async run(argv) {
       calls.run.push([...argv]);
+      const port = Number(/--port (\d+)/.exec(argv[2] ?? '')?.[1] ?? 0);
+      // A launch only takes if nothing holds the port (and the test allows it).
+      if (port && !occupied[port] && (!startable || startable.includes(port))) {
+        occupied[port] = 'ours';
+      }
       return { exitCode: 0, stdout: '', stderr: '' };
     },
     async storeGet(key) {
@@ -48,18 +81,27 @@ function host(options: { healthyAfter?: number } = {}) {
     async sleep() {},
     pluginRoot: '/plugins/fast jev',
   };
-  return { fake, calls, store };
+  return { fake, calls, store, occupied };
 }
 
 describe('viewer config', () => {
-  it('defaults, overrides and rejects an impossible port', () => {
-    expect(resolveViewerConfig({})).toEqual(config);
+  it('defaults, overrides and rejects impossible values', () => {
+    expect(resolveViewerConfig({})).toEqual({ ...config, portSpan: 10 });
     expect(resolveViewerConfig({ viewerPort: 5000, viewerEnabled: false })).toMatchObject({
       port: 5000,
       enabled: false,
     });
-    expect(resolveViewerConfig({ viewerPort: -1 }).port).toBe(4317);
+    expect(resolveViewerConfig({ viewerPort: -1 }).port).toBe(0);
+    expect(resolveViewerConfig({ viewerPortBase: 80 }).portBase).toBe(41000);
+    expect(resolveViewerConfig({ viewerPortSpan: 0 }).portSpan).toBe(10);
     expect(resolveViewerConfig({ viewerIdleMinutes: 0 }).idleMinutes).toBe(1);
+  });
+
+  it('orders the ports it will try', () => {
+    expect(portCandidates(config)).toEqual([41000, 41001, 41002, 41003]);
+    expect(portCandidates(config, 41002)).toEqual([41002, 41000, 41001, 41003]);
+    expect(portCandidates(config, 4317)[0]).toBe(4317);
+    expect(portCandidates(pinned)).toEqual([41000]);
   });
 
   it('quotes shell arguments and builds a loopback url', () => {
@@ -70,49 +112,86 @@ describe('viewer config', () => {
 });
 
 describe('viewer lifecycle', () => {
-  it('reuses a server that already answers', async () => {
-    const { fake, calls } = host();
+  it('reuses a viewer already listening rather than starting another', async () => {
+    const { fake, calls } = host({ occupied: { 41000: 'ours' } });
     const viewer = await createViewer(fake, config);
     await viewer.ensure();
     await viewer.ensure();
     expect(calls.run).toHaveLength(0);
-    expect(calls.health).toBe(1);
+    expect(viewer.port()).toBe(41000);
+    expect(viewer.url()).toMatch(/^http:\/\/127\.0\.0\.1:41000\/\?t=[0-9a-f]{32}$/);
   });
 
-  it('starts a detached server with quoted paths when nothing answers', async () => {
-    const { fake, calls, store } = host({ healthyAfter: 2 });
+  it('walks past ports other services hold and starts on the first free one', async () => {
+    const { fake, calls, store } = host({ occupied: { 41000: 'foreign', 41001: 'foreign' } });
     const viewer = await createViewer(fake, config);
     await viewer.ensure();
+    expect(viewer.port()).toBe(41002);
+    expect(store.get('viewerPort')).toBe(41002);
+    expect(calls.run).toHaveLength(1);
+    expect(calls.run[0]?.[2]).toContain('--port 41002');
+  });
+
+  it('never sends the token to a port before /whoami says it is ours', async () => {
+    const { fake, calls } = host({ occupied: { 41000: 'foreign', 41001: 'ours' } });
+    await (await createViewer(fake, config)).ensure();
+    expect(calls.probes).toContain(41000);
+    expect(calls.tokenedProbes).not.toContain(41000);
+    expect(calls.tokenedProbes).toContain(41001);
+  });
+
+  it('prefers the port a previous session settled on', async () => {
+    const { fake, store } = host({ occupied: { 41000: 'ours', 41003: 'ours' } });
+    await store.set('viewerPort', 41003);
+    const viewer = await createViewer(fake, config);
+    await viewer.ensure();
+    expect(viewer.port()).toBe(41003);
+  });
+
+  it('starts a detached server with quoted paths', async () => {
+    const { fake, calls, store } = host();
+    await (await createViewer(fake, config)).ensure();
     expect(calls.run[0]?.[0]).toBe('/bin/sh');
     const command = calls.run[0]?.[2] ?? '';
     expect(command).toContain("nohup 'node' '/plugins/fast jev/viewer/server.mjs'");
-    expect(command).toContain('--port 4317');
+    expect(command).toContain('--port 41000');
     expect(command).toContain('--idle-ms 1800000');
     expect(command.endsWith('>/dev/null 2>&1 &')).toBe(true);
     expect(command).toContain(String(store.get('viewerToken')));
   });
 
   it('keeps one token across viewers and sends it as a header, never in the body', async () => {
-    const { fake, calls, store } = host();
+    const { fake, calls, store } = host({ occupied: { 41000: 'ours' } });
     const first = await createViewer(fake, config);
+    await first.ensure();
     await first.post([{ type: 'run.start', runId: 'r1' }]);
     const second = await createViewer(fake, config);
-    expect(second.url).toBe(first.url);
-    expect(store.size).toBe(1);
+    await second.ensure();
+    expect(second.url()).toBe(first.url());
     expect(calls.posts[0]?.token).toBe(store.get('viewerToken'));
     expect(calls.posts[0]?.body).toBe('[{"type":"run.start","runId":"r1"}]');
     expect(calls.posts[0]?.body).not.toContain(String(store.get('viewerToken')));
   });
 
-  it('gives up with a usable message when the server never answers', async () => {
-    const { fake } = host({ healthyAfter: Number.MAX_SAFE_INTEGER });
+  it('says so when the whole range is taken', async () => {
+    const { fake } = host({ occupied: { 41000: 'foreign', 41001: 'foreign', 41002: 'foreign', 41003: 'foreign' } });
     const viewer = await createViewer(fake, config);
-    await expect(viewer.ensure()).rejects.toThrow(/did not answer on 127\.0\.0\.1:4317/);
+    await expect(viewer.ensure()).rejects.toThrow(/no free port .* 41000-41003 \(4 of 4 in use/);
   });
 
-  it('posts nothing for an empty batch', async () => {
-    const { fake, calls } = host();
-    await (await createViewer(fake, config)).post([]);
+  it('keeps the pinned-port message when a port was asked for by name', async () => {
+    const { fake } = host({ occupied: { 41000: 'foreign' } });
+    const viewer = await createViewer(fake, pinned);
+    await expect(viewer.ensure()).rejects.toThrow(/did not answer on 127\.0\.0\.1:41000/);
+  });
+
+  it('posts nothing before a port is settled, or for an empty batch', async () => {
+    const { fake, calls } = host({ occupied: { 41000: 'ours' } });
+    const viewer = await createViewer(fake, config);
+    await viewer.post([{ type: 'run.start' }]);
+    expect(calls.posts).toHaveLength(0);
+    await viewer.ensure();
+    await viewer.post([]);
     expect(calls.posts).toHaveLength(0);
   });
 });
