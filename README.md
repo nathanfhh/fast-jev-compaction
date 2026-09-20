@@ -150,7 +150,15 @@ Then add this repository as a plugin marketplace and install the plugin,
 either from the shell or as slash commands inside a session:
 
 ```sh
-claude plugin marketplace add tamaratran/fast-jev-compaction
+claude plugin marketplace add nathanfhh/fast-jev-compaction
+claude plugin install fast-jev-compaction@fast-jev-compaction
+```
+
+A local checkout works as a marketplace too, and is what you want when you
+intend to change the code:
+
+```sh
+claude plugin marketplace add /path/to/fast-jev-compaction
 claude plugin install fast-jev-compaction@fast-jev-compaction
 ```
 
@@ -162,9 +170,28 @@ auto-compaction) goes through Jev: the toast reads
 replaced the built-in summary, or `fallback to built-in summary (…)` when Jev
 could not remove enough (short sessions, or when it fails).
 
-To run from a checkout without installing: `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir .`
-from the repository root. No publishing step is required; the marketplace is
-just the repo's `.claude-plugin/marketplace.json`.
+### Updating an install after changing the code
+
+Installing **copies** the marketplace's contents at that moment; it does not
+link to them. Editing the checkout therefore changes nothing until the
+marketplace is re-read and the plugin re-installed — the middle command is the
+one that is easy to forget:
+
+```sh
+claude plugin uninstall fast-jev-compaction@fast-jev-compaction -s user
+claude plugin marketplace update fast-jev-compaction
+claude plugin install fast-jev-compaction@fast-jev-compaction
+```
+
+Restart Claude Code afterwards. While actually working on the plugin, skip all
+of that and load the checkout directly — it is read live:
+
+```sh
+CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir .
+```
+
+No publishing step is required either way; the marketplace is just the repo's
+`.claude-plugin/marketplace.json`.
 
 ## Development
 

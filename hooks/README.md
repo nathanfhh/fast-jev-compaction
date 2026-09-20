@@ -31,11 +31,23 @@ hooks surface before installing or loading it:
 export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1
 export TYPESAFE_API_KEY="<your TypeSafe key>"
 
-claude plugin marketplace add tamaratran/fast-jev-compaction
+claude plugin marketplace add nathanfhh/fast-jev-compaction
 claude plugin install fast-jev-compaction@fast-jev-compaction
 ```
 
-For local development:
+A local checkout is a marketplace too — `claude plugin marketplace add
+/path/to/fast-jev-compaction`. Either way the install is a **copy** taken at
+that moment, so after changing the code the marketplace has to be re-read
+before re-installing:
+
+```sh
+claude plugin uninstall fast-jev-compaction@fast-jev-compaction -s user
+claude plugin marketplace update fast-jev-compaction
+claude plugin install fast-jev-compaction@fast-jev-compaction
+```
+
+For local development, load the checkout directly instead — it is read live,
+with no install step:
 
 ```sh
 CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir .
@@ -128,6 +140,29 @@ never become markup.
 every tool input, which is where file paths, Bash commands and edit diffs
 live. Tool *results* are not sent — only their size. Treat the port as you
 would the transcript itself.
+
+### Lifetime
+
+The server is started detached, so it deliberately outlives the session that
+started it: the next session finds it already listening (the token is kept in
+the plugin store) instead of fighting it for the port. It therefore has to
+retire itself, on two deadlines swept once a minute:
+
+- nothing reported **and** nobody watching for `viewerIdleMinutes`: it stops;
+- nothing reported for four times that, even with a page still open: it stops
+  anyway, so a forgotten tab cannot keep it alive forever.
+
+It also stops on `SIGINT`/`SIGTERM` and on `POST /shutdown` with the token.
+
+**A page refresh loses nothing** — the server replays its whole buffer (the
+last 4000 events) to every new connection, so reloading restores the run.
+What ends a run is the *server* going away, or **Clear**. To check for one or
+end it by hand:
+
+```sh
+lsof -nP -iTCP:4317 -sTCP:LISTEN     # is anything there
+pkill -f viewer/server.mjs           # end every viewer
+```
 
 `npm run demo:viewer` replays a realistic transcript through the real
 compaction path with scripted Jev answers, so the page can be worked on

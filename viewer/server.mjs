@@ -20,6 +20,8 @@ const MAX_EVENTS = 4000;
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 const PING_MS = 15_000;
 const IDLE_SWEEP_MS = 60_000;
+/** How much longer an unwatched-but-open viewer may idle before it retires. */
+const MAX_IDLE_MULTIPLE = 4;
 
 function arg(name, fallback) {
   const at = process.argv.indexOf(name);
@@ -47,7 +49,10 @@ let events = [];
 /** @type {Set<import('node:http').ServerResponse>} */
 const clients = new Set();
 let seq = 0;
+// `lastActivity` is any touch at all; `lastEvent` is a compaction actually
+// reporting something. The two deadlines below key on different ones.
 let lastActivity = Date.now();
+let lastEvent = Date.now();
 
 /** Constant-time token comparison that tolerates a length mismatch. */
 function tokenOk(given) {
@@ -87,6 +92,7 @@ function sendJson(res, status, value) {
 }
 
 function record(data) {
+  lastEvent = Date.now();
   const entry = { seq: ++seq, at: Date.now(), data };
   events.push(entry);
   if (events.length > MAX_EVENTS) events = events.slice(-MAX_EVENTS);
@@ -203,9 +209,20 @@ server.listen(port, HOST, () => {
   console.log(`fast-jev viewer on http://${HOST}:${port}/?t=${token}`);
 });
 
-// Nothing to serve and nobody watching: stop rather than linger for the session.
+/**
+ * The server is detached, so it outlives the session that started it and has to
+ * retire itself. Two deadlines, because an open tab holds a client forever and
+ * would otherwise keep an idle server alive indefinitely:
+ *
+ *  - nobody watching and nothing happening for `idleMs`: stop;
+ *  - nothing happening for `MAX_IDLE_MULTIPLE * idleMs`: stop regardless, even
+ *    with a tab still open (the page says so, and Download still works).
+ */
 setInterval(() => {
-  if (clients.size === 0 && Date.now() - lastActivity > idleMs) process.exit(0);
+  const quiet = Date.now() - lastEvent;
+  const idle = Date.now() - lastActivity;
+  if (clients.size === 0 && quiet > idleMs && idle > idleMs) process.exit(0);
+  if (quiet > idleMs * MAX_IDLE_MULTIPLE) process.exit(0);
 }, IDLE_SWEEP_MS).unref?.();
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
